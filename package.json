@@ -1,0 +1,8 @@
+{
+  "name": "tmlookup",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@turf/turf": "^6.5.0"
+  }
+}
