@@ -81,11 +81,13 @@ export default function handler(req, res) {
       });
     }
 
-    return res.status(200).json({
-      house: houseDistrict,
-      senate: senateDistrict,
-      sboe: sboeDistrict,
-    });
+return res.status(200).json({
+  districts: {
+    house: houseDistrict ? Number(houseDistrict.SLDLST) : null,
+    senate: senateDistrict ? Number(senateDistrict.SLDUST) : null,
+    sboe: sboeDistrict ? Number(sboeDistrict.District) : null,
+  },
+});
   } catch (err) {
     console.error(err);
     return res.status(500).json({
