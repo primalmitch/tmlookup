@@ -40,7 +40,7 @@ export default function handler(req, res) {
     let sboeDistrict = null; // ← ADD
 
     for (const feature of houseGeo.features) {
-      if (turf.booleanPointInPolygon(point, feature)) {
+      if (turf.booleanPointInPolygon(point, feature.geometry)) {
         houseDistrict = feature.properties;
         break;
       }
