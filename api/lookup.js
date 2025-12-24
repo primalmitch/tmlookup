@@ -23,8 +23,9 @@ async function loadGeoJSON() {
 }
 
 function findDistrict(geojson, pt) {
-  for (const feature of geojson.features) {
-if (turf.booleanPointInPolygon(pt, feature)) {
+  const features = geojson?.features || [];
+  for (const feature of features) {
+    if (turf.booleanPointInPolygon(pt, feature)) {
       // TIGER uses NAME as the district number (string)
       return parseInt(feature.properties.NAME, 10);
     }
@@ -33,7 +34,7 @@ if (turf.booleanPointInPolygon(pt, feature)) {
 }
 
 export default async function handler(req, res) {
-  const { lat, lng } = req.query;
+  const { lat, lng, debug } = req.query;
 
   if (!lat || !lng) {
     return res.status(400).json({ error: "Missing lat or lng" });
@@ -48,8 +49,30 @@ export default async function handler(req, res) {
 
   await loadGeoJSON();
 
+  // Debug mode: return bbox + schema hints
+  if (debug === "1") {
+    const houseFirst = houseGeo?.features?.[0];
+    const senateFirst = senateGeo?.features?.[0];
+
+    return res.status(200).json({
+      house_type: houseGeo?.type,
+      house_feature_type: houseFirst?.type,
+      house_props_keys: houseFirst?.properties
+        ? Object.keys(houseFirst.properties).slice(0, 15)
+        : null,
+      house_bbox: houseFirst ? turf.bbox(houseFirst) : null,
+
+      senate_type: senateGeo?.type,
+      senate_feature_type: senateFirst?.type,
+      senate_props_keys: senateFirst?.properties
+        ? Object.keys(senateFirst.properties).slice(0, 15)
+        : null,
+      senate_bbox: senateFirst ? turf.bbox(senateFirst) : null
+    });
+  }
+
   // Turf expects [lng, lat]
-const pt = turf.point([longitude, latitude]);
+  const pt = turf.point([longitude, latitude]);
 
   const house = findDistrict(houseGeo, pt);
   const senate = findDistrict(senateGeo, pt);
