@@ -33,9 +33,11 @@ export default function handler(req, res) {
     // Load GeoJSON from /data
     const houseGeo = loadGeoJSON("data/tx-house-2025.geojson");
     const senateGeo = loadGeoJSON("data/tx-senate-2025.geojson");
+    const sboeGeo = loadGeoJSON("data/sboe_plane2106.geojson"); // ← ADD
 
     let houseDistrict = null;
     let senateDistrict = null;
+    let sboeDistrict = null; // ← ADD
 
     for (const feature of houseGeo.features) {
       if (turf.booleanPointInPolygon(point, feature)) {
@@ -51,19 +53,29 @@ export default function handler(req, res) {
       }
     }
 
+    for (const feature of sboeGeo.features) { // ← ADD
+      if (turf.booleanPointInPolygon(point, feature)) {
+        sboeDistrict = feature.properties;
+        break;
+      }
+    }
+
     if (debug === "1") {
       return res.status(200).json({
         input: { lat: latitude, lng: longitude },
         houseFound: !!houseDistrict,
         senateFound: !!senateDistrict,
+        sboeFound: !!sboeDistrict, // ← ADD
         house: houseDistrict,
         senate: senateDistrict,
+        sboe: sboeDistrict, // ← ADD
       });
     }
 
     return res.status(200).json({
       house: houseDistrict,
       senate: senateDistrict,
+      sboe: sboeDistrict, // ← ADD
     });
   } catch (err) {
     console.error(err);
