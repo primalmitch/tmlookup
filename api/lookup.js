@@ -30,22 +30,24 @@ export default function handler(req, res) {
     // Turf expects [lng, lat]
     const point = turf.point([longitude, latitude]);
 
-    // Load GeoJSON from /data
+    // Load GeoJSON files
     const houseGeo = loadGeoJSON("data/tx-house-2025.geojson");
     const senateGeo = loadGeoJSON("data/tx-senate-2025.geojson");
-    const sboeGeo = loadGeoJSON("data/sboe_plane2106.geojson"); // ← ADD
+    const sboeGeo = loadGeoJSON("data/sboe_plane2106.geojson");
 
     let houseDistrict = null;
     let senateDistrict = null;
-    let sboeDistrict = null; // ← ADD
+    let sboeDistrict = null;
 
+    // HOUSE
     for (const feature of houseGeo.features) {
-      if (turf.booleanPointInPolygon(point, feature.geometry)) {
+      if (turf.booleanPointInPolygon(point, feature)) {
         houseDistrict = feature.properties;
         break;
       }
     }
 
+    // SENATE
     for (const feature of senateGeo.features) {
       if (turf.booleanPointInPolygon(point, feature)) {
         senateDistrict = feature.properties;
@@ -53,11 +55,18 @@ export default function handler(req, res) {
       }
     }
 
-    for (const feature of sboeGeo.features) { // ← ADD
-      if (turf.booleanPointInPolygon(point, feature)) {
-        sboeDistrict = feature.properties;
-        break;
+    // SBOE (flatten MultiPolygons explicitly)
+    for (const feature of sboeGeo.features) {
+      const flattened = turf.flatten(feature);
+
+      for (const f of flattened.features) {
+        if (turf.booleanPointInPolygon(point, f)) {
+          sboeDistrict = feature.properties;
+          break;
+        }
       }
+
+      if (sboeDistrict) break;
     }
 
     if (debug === "1") {
@@ -65,17 +74,17 @@ export default function handler(req, res) {
         input: { lat: latitude, lng: longitude },
         houseFound: !!houseDistrict,
         senateFound: !!senateDistrict,
-        sboeFound: !!sboeDistrict, // ← ADD
+        sboeFound: !!sboeDistrict,
         house: houseDistrict,
         senate: senateDistrict,
-        sboe: sboeDistrict, // ← ADD
+        sboe: sboeDistrict,
       });
     }
 
     return res.status(200).json({
       house: houseDistrict,
       senate: senateDistrict,
-      sboe: sboeDistrict, // ← ADD
+      sboe: sboeDistrict,
     });
   } catch (err) {
     console.error(err);
