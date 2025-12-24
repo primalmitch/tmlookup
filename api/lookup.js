@@ -2,8 +2,7 @@ import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 
-import { point } from "@turf/turf";
-import booleanPointInPolygon from "@turf/boolean-point-in-polygon";
+import * as turf from "@turf/turf";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -25,7 +24,7 @@ async function loadGeoJSON() {
 
 function findDistrict(geojson, pt) {
   for (const feature of geojson.features) {
-    if (booleanPointInPolygon(pt, feature)) {
+if (turf.booleanPointInPolygon(pt, feature)) {
       // TIGER uses NAME as the district number (string)
       return parseInt(feature.properties.NAME, 10);
     }
@@ -50,7 +49,7 @@ export default async function handler(req, res) {
   await loadGeoJSON();
 
   // Turf expects [lng, lat]
-  const pt = point([longitude, latitude]);
+const pt = turf.point([longitude, latitude]);
 
   const house = findDistrict(houseGeo, pt);
   const senate = findDistrict(senateGeo, pt);
