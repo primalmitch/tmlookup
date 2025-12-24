@@ -2,92 +2,93 @@ import fs from "fs";
 import path from "path";
 import * as turf from "@turf/turf";
 
+/* ---------- helpers ---------- */
 function loadGeoJSON(relativePath) {
   const filePath = path.join(process.cwd(), relativePath);
   const raw = fs.readFileSync(filePath, "utf8");
   return JSON.parse(raw);
 }
 
+/* ---------- API handler ---------- */
 export default function handler(req, res) {
+
+  /* ===== CORS (REQUIRED) ===== */
+  const origin = req.headers.origin || "";
+  const allowedOrigins = new Set([
+    "https://www.texasmatters.org",
+    "https://texasmatters.org",
+  ]);
+
+  if (allowedOrigins.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+  /* ===== END CORS ===== */
+
   try {
-    const { lat, lng, debug } = req.query;
+    const { lat, lng } = req.query;
 
     if (!lat || !lng) {
-      return res.status(400).json({
-        error: "Missing lat or lng query parameters",
-      });
+      return res.status(400).json({ error: "Missing lat or lng" });
     }
 
     const latitude = parseFloat(lat);
     const longitude = parseFloat(lng);
 
     if (isNaN(latitude) || isNaN(longitude)) {
-      return res.status(400).json({
-        error: "Invalid lat or lng values",
-      });
+      return res.status(400).json({ error: "Invalid lat or lng" });
     }
 
-    // Turf expects [lng, lat]
     const point = turf.point([longitude, latitude]);
 
-    // Load GeoJSON files
+    /* ---------- load data ---------- */
     const houseGeo = loadGeoJSON("data/tx-house-2025.geojson");
     const senateGeo = loadGeoJSON("data/tx-senate-2025.geojson");
     const sboeGeo = loadGeoJSON("data/sboe_plane2106.geojson");
 
-    let houseDistrict = null;
-    let senateDistrict = null;
-    let sboeDistrict = null;
+    let house = null;
+    let senate = null;
+    let sboe = null;
 
-    // HOUSE
-    for (const feature of houseGeo.features) {
-      if (turf.booleanPointInPolygon(point, feature)) {
-        houseDistrict = feature.properties;
+    /* ---------- house ---------- */
+    for (const f of houseGeo.features) {
+      if (turf.booleanPointInPolygon(point, f)) {
+        house = Number(f.properties.SLDLST);
         break;
       }
     }
 
-    // SENATE
-    for (const feature of senateGeo.features) {
-      if (turf.booleanPointInPolygon(point, feature)) {
-        senateDistrict = feature.properties;
+    /* ---------- senate ---------- */
+    for (const f of senateGeo.features) {
+      if (turf.booleanPointInPolygon(point, f)) {
+        senate = Number(f.properties.SLDUST);
         break;
       }
     }
 
-    // SBOE (flatten MultiPolygons explicitly)
-    for (const feature of sboeGeo.features) {
-      const flattened = turf.flatten(feature);
-
-      for (const f of flattened.features) {
-        if (turf.booleanPointInPolygon(point, f)) {
-          sboeDistrict = feature.properties;
-          break;
-        }
+    /* ---------- SBOE ---------- */
+    for (const f of sboeGeo.features) {
+      if (turf.booleanPointInPolygon(point, f)) {
+        sboe = Number(f.properties.District);
+        break;
       }
-
-      if (sboeDistrict) break;
     }
 
-    if (debug === "1") {
-      return res.status(200).json({
-        input: { lat: latitude, lng: longitude },
-        houseFound: !!houseDistrict,
-        senateFound: !!senateDistrict,
-        sboeFound: !!sboeDistrict,
-        house: houseDistrict,
-        senate: senateDistrict,
-        sboe: sboeDistrict,
-      });
-    }
+    return res.status(200).json({
+      districts: {
+        house,
+        senate,
+        sboe,
+      },
+    });
 
-return res.status(200).json({
-  districts: {
-    house: houseDistrict ? Number(houseDistrict.SLDLST) : null,
-    senate: senateDistrict ? Number(senateDistrict.SLDUST) : null,
-    sboe: sboeDistrict ? Number(sboeDistrict.District) : null,
-  },
-});
   } catch (err) {
     console.error(err);
     return res.status(500).json({
