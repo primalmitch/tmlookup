@@ -1,16 +1,4 @@
-// /api/candidates.js (or /pages/api/candidates.js)
-
-/* =========================================================
-   NAIVE IN-MEMORY SPAM GUARDS (NO NEW SERVICES)
-   - Rate limit: 30 requests / 60s / IP
-   - Cache: 30 min by office|district
-   NOTE: In-memory = per server instance (good starter)
-========================================================= */
-const CAND_WINDOW_MS = 60_000;
-const CAND_MAX = 30;
-
-const candHits = new Map();   // ip -> { count, resetAt }
-const candCache = new Map();  // key -> { data, exp }
+import { kv } from "@vercel/kv";
 
 function getIP(req) {
   const xff = req.headers["x-forwarded-for"];
@@ -19,32 +7,15 @@ function getIP(req) {
     .trim() || "unknown";
 }
 
-function rateLimitCandidates(req) {
+async function rateLimitKV(req) {
   const ip = getIP(req);
-  const now = Date.now();
-  const cur = candHits.get(ip);
+  const key = `rl:candidates:${ip}`;
 
-  if (!cur || now > cur.resetAt) {
-    candHits.set(ip, { count: 1, resetAt: now + CAND_WINDOW_MS });
-    return true;
+  const count = await kv.incr(key);
+  if (count === 1) {
+    await kv.expire(key, 60); // 60 seconds
   }
-  if (cur.count >= CAND_MAX) return false;
-  cur.count += 1;
-  return true;
-}
-
-function cacheGet(key) {
-  const v = candCache.get(key);
-  if (!v) return null;
-  if (Date.now() > v.exp) {
-    candCache.delete(key);
-    return null;
-  }
-  return v.data;
-}
-
-function cacheSet(key, data, ttlMs) {
-  candCache.set(key, { data, exp: Date.now() + ttlMs });
+  return count <= 30; // 30 req/min
 }
 
 export default async function handler(req, res) {
@@ -65,10 +36,12 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "GET") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
-  // ---- RATE LIMIT (server-side) ----
-  if (!rateLimitCandidates(req)) {
+  // ---- RATE LIMIT (shared via KV) ----
+  if (!(await rateLimitKV(req))) {
     return res.status(429).json({ error: "Too many requests" });
   }
 
@@ -86,9 +59,12 @@ export default async function handler(req, res) {
 
     if (!office) return res.status(400).json({ error: "Missing office" });
 
-    // ---- CACHE (30m) ----
-    const cacheKey = `cand:${office.toLowerCase()}|${districtRaw === undefined ? "none" : String(districtRaw)}`;
-    const cached = cacheGet(cacheKey);
+    // ---- CACHE (30 minutes) ----
+    const cacheKey = `cache:candidates:${office.toLowerCase()}|${
+      districtRaw === undefined ? "none" : String(districtRaw)
+    }`;
+
+    const cached = await kv.get(cacheKey);
     if (cached) return res.status(200).json(cached);
 
     const safeOffice = office.replace(/"/g, '\\"');
@@ -96,14 +72,16 @@ export default async function handler(req, res) {
 
     if (districtRaw !== undefined) {
       const d = Number(districtRaw);
-      if (!Number.isFinite(d) || d <= 0) return res.status(400).json({ error: "Invalid district" });
+      if (!Number.isFinite(d) || d <= 0) {
+        return res.status(400).json({ error: "Invalid district" });
+      }
       formula = `AND(${formula}, {District}=${d})`;
     }
 
     const params = new URLSearchParams();
     params.set("filterByFormula", formula);
 
-    // ✅ RESTORE ORIGINAL ORDERING
+    // ✅ KEEP ORIGINAL ORDERING
     params.append("sort[0][field]", "Order");
     params.append("sort[0][direction]", "asc");
     params.append("sort[1][field]", "Name");
@@ -113,7 +91,10 @@ export default async function handler(req, res) {
       AIRTABLE_TABLE
     )}?${params.toString()}`;
 
-    const r = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_PAT}` } });
+    const r = await fetch(url, {
+      headers: { Authorization: `Bearer ${AIRTABLE_PAT}` },
+    });
+
     if (!r.ok) {
       const t = await r.text().catch(() => "");
       return res.status(500).json({ error: "Airtable fetch failed", details: t });
@@ -122,7 +103,8 @@ export default async function handler(req, res) {
     const data = await r.json();
     const payload = { records: data.records || [] };
 
-    cacheSet(cacheKey, payload, 30 * 60 * 1000); // 30m
+    await kv.set(cacheKey, payload, { ex: 1800 }); // 30 minutes
+
     return res.status(200).json(payload);
   } catch (e) {
     console.error(e);
