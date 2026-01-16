@@ -1,3 +1,52 @@
+// /api/candidates.js (or /pages/api/candidates.js)
+
+/* =========================================================
+   NAIVE IN-MEMORY SPAM GUARDS (NO NEW SERVICES)
+   - Rate limit: 30 requests / 60s / IP
+   - Cache: 30 min by office|district
+   NOTE: In-memory = per server instance (good starter)
+========================================================= */
+const CAND_WINDOW_MS = 60_000;
+const CAND_MAX = 30;
+
+const candHits = new Map();   // ip -> { count, resetAt }
+const candCache = new Map();  // key -> { data, exp }
+
+function getIP(req) {
+  const xff = req.headers["x-forwarded-for"];
+  return (Array.isArray(xff) ? xff[0] : (xff || ""))
+    .split(",")[0]
+    .trim() || "unknown";
+}
+
+function rateLimitCandidates(req) {
+  const ip = getIP(req);
+  const now = Date.now();
+  const cur = candHits.get(ip);
+
+  if (!cur || now > cur.resetAt) {
+    candHits.set(ip, { count: 1, resetAt: now + CAND_WINDOW_MS });
+    return true;
+  }
+  if (cur.count >= CAND_MAX) return false;
+  cur.count += 1;
+  return true;
+}
+
+function cacheGet(key) {
+  const v = candCache.get(key);
+  if (!v) return null;
+  if (Date.now() > v.exp) {
+    candCache.delete(key);
+    return null;
+  }
+  return v.data;
+}
+
+function cacheSet(key, data, ttlMs) {
+  candCache.set(key, { data, exp: Date.now() + ttlMs });
+}
+
 export default async function handler(req, res) {
   // ---- CORS ----
   const origin = req.headers.origin || "";
@@ -18,6 +67,11 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
 
+  // ---- RATE LIMIT (server-side) ----
+  if (!rateLimitCandidates(req)) {
+    return res.status(429).json({ error: "Too many requests" });
+  }
+
   try {
     const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID;
     const AIRTABLE_PAT = process.env.AIRTABLE_PAT;
@@ -31,6 +85,11 @@ export default async function handler(req, res) {
     const districtRaw = req.query.district;
 
     if (!office) return res.status(400).json({ error: "Missing office" });
+
+    // ---- CACHE (30m) ----
+    const cacheKey = `cand:${office.toLowerCase()}|${districtRaw === undefined ? "none" : String(districtRaw)}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.status(200).json(cached);
 
     const safeOffice = office.replace(/"/g, '\\"');
     let formula = `{Office}="${safeOffice}"`;
@@ -61,7 +120,10 @@ export default async function handler(req, res) {
     }
 
     const data = await r.json();
-    return res.status(200).json({ records: data.records || [] });
+    const payload = { records: data.records || [] };
+
+    cacheSet(cacheKey, payload, 30 * 60 * 1000); // 30m
+    return res.status(200).json(payload);
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: "Server error" });
