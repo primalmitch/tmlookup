@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "dependencies": {
-    "@turf/turf": "^6.5.0"
+    "@turf/turf": "^6.5.0",
+    "@vercel/kv": "^2.0.0"
   }
 }
