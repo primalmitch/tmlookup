@@ -1,13 +1,13 @@
 export default async function handler(req, res) {
-  // ===== CORS (REQUIRED) =====
+  // ---- CORS ----
   const origin = req.headers.origin || "";
-  const allowedOrigins = new Set([
-    "https://www.texasmatters.org",
-    "https://texasmatters.org",
+  const allowed = new Set([
     "https://texas-matters.webflow.io",
+    "https://texasmatters.org",
+    "https://www.texasmatters.org",
   ]);
 
-  if (allowedOrigins.has(origin)) {
+  if (allowed.has(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
   }
@@ -15,15 +15,8 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  // Preflight
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
-
-  // Only allow GET
-  if (req.method !== "GET") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
 
   try {
     const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID;
@@ -34,43 +27,43 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Server not configured" });
     }
 
-    const { office, district } = req.query;
+    const office = String(req.query.office || "").trim();
+    const districtRaw = req.query.district;
 
-    let formulaParts = [];
-    if (office) {
-      formulaParts.push(`{Office}='${office}'`);
-    }
-    if (district) {
-      formulaParts.push(`{District}='${district}'`);
-    }
+    if (!office) return res.status(400).json({ error: "Missing office" });
 
-    const filterFormula =
-      formulaParts.length > 0
-        ? `AND(${formulaParts.join(",")})`
-        : "";
+    const safeOffice = office.replace(/"/g, '\\"');
+    let formula = `{Office}="${safeOffice}"`;
 
-    const url =
-      `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(
-        AIRTABLE_TABLE
-      )}` +
-      (filterFormula
-        ? `?filterByFormula=${encodeURIComponent(filterFormula)}`
-        : "");
-
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${AIRTABLE_PAT}`,
-      },
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      return res.status(500).json({ error: "Airtable error", details: text });
+    if (districtRaw !== undefined) {
+      const d = Number(districtRaw);
+      if (!Number.isFinite(d) || d <= 0) return res.status(400).json({ error: "Invalid district" });
+      formula = `AND(${formula}, {District}=${d})`;
     }
 
-    const data = await response.json();
-    return res.status(200).json(data);
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
+    const params = new URLSearchParams();
+    params.set("filterByFormula", formula);
+
+    // ✅ RESTORE ORIGINAL ORDERING
+    params.append("sort[0][field]", "Order");
+    params.append("sort[0][direction]", "asc");
+    params.append("sort[1][field]", "Name");
+    params.append("sort[1][direction]", "asc");
+
+    const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(
+      AIRTABLE_TABLE
+    )}?${params.toString()}`;
+
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_PAT}` } });
+    if (!r.ok) {
+      const t = await r.text().catch(() => "");
+      return res.status(500).json({ error: "Airtable fetch failed", details: t });
+    }
+
+    const data = await r.json();
+    return res.status(200).json({ records: data.records || [] });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Server error" });
   }
 }
