@@ -7,15 +7,28 @@ function getIP(req) {
     .trim() || "unknown";
 }
 
-async function rateLimitKV(req) {
+/**
+ * Two-tier fixed-window rate limiting (shared via KV)
+ * - burst: N per 60 seconds
+ * - sustained: M per 3600 seconds
+ */
+async function rateLimitTwoTier(req, { prefix, burstLimit, hourLimit }) {
   const ip = getIP(req);
-  const key = `rl:candidates:${ip}`;
 
-  const count = await kv.incr(key);
-  if (count === 1) {
-    await kv.expire(key, 60); // 60 seconds
-  }
-  return count <= 30; // 30 req/min
+  const minuteKey = `rl:${prefix}:m:${ip}`;
+  const hourKey = `rl:${prefix}:h:${ip}`;
+
+  // increment both counters
+  const [mCount, hCount] = await Promise.all([
+    kv.incr(minuteKey),
+    kv.incr(hourKey),
+  ]);
+
+  // set TTLs only on first hit
+  if (mCount === 1) await kv.expire(minuteKey, 60);
+  if (hCount === 1) await kv.expire(hourKey, 3600);
+
+  return mCount <= burstLimit && hCount <= hourLimit;
 }
 
 export default async function handler(req, res) {
@@ -40,8 +53,16 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  // ---- RATE LIMIT (shared via KV) ----
-  if (!(await rateLimitKV(req))) {
+  // ---- TWO-TIER RATE LIMIT (shared via KV) ----
+  // Burst allows one lookup fan-out + a few addresses.
+  // Hour cap protects against sustained scraping/abuse.
+  const ok = await rateLimitTwoTier(req, {
+    prefix: "candidates",
+    burstLimit: 200, // per minute
+    hourLimit: 2000, // per hour
+  });
+
+  if (!ok) {
     return res.status(429).json({ error: "Too many requests" });
   }
 
@@ -59,7 +80,7 @@ export default async function handler(req, res) {
 
     if (!office) return res.status(400).json({ error: "Missing office" });
 
-    // ---- CACHE (30 minutes) ----
+    // ---- KV CACHE (30 minutes) ----
     const cacheKey = `cache:candidates:${office.toLowerCase()}|${
       districtRaw === undefined ? "none" : String(districtRaw)
     }`;
@@ -103,7 +124,8 @@ export default async function handler(req, res) {
     const data = await r.json();
     const payload = { records: data.records || [] };
 
-    await kv.set(cacheKey, payload, { ex: 1800 }); // 30 minutes
+    // Cache 30m (1800 seconds)
+    await kv.set(cacheKey, payload, { ex: 1800 });
 
     return res.status(200).json(payload);
   } catch (e) {
