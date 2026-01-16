@@ -1,3 +1,5 @@
+// /api/lookup.js (or /pages/api/lookup.js)
+
 import fs from "fs";
 import path from "path";
 import * as turf from "@turf/turf";
@@ -9,9 +11,55 @@ function loadGeoJSON(relativePath) {
   return JSON.parse(raw);
 }
 
+/* =========================================================
+   NAIVE IN-MEMORY SPAM GUARDS (NO NEW SERVICES)
+   - Rate limit: 10 requests / 60s / IP
+   - Cache: 24h by rounded lat/lng (5 decimals)
+   NOTE: In-memory = per server instance (good starter)
+========================================================= */
+const LOOKUP_WINDOW_MS = 60_000;
+const LOOKUP_MAX = 10;
+
+const lookupHits = new Map();   // ip -> { count, resetAt }
+const lookupCache = new Map();  // key -> { data, exp }
+
+function getIP(req) {
+  const xff = req.headers["x-forwarded-for"];
+  return (Array.isArray(xff) ? xff[0] : (xff || ""))
+    .split(",")[0]
+    .trim() || "unknown";
+}
+
+function rateLimitLookup(req) {
+  const ip = getIP(req);
+  const now = Date.now();
+  const cur = lookupHits.get(ip);
+
+  if (!cur || now > cur.resetAt) {
+    lookupHits.set(ip, { count: 1, resetAt: now + LOOKUP_WINDOW_MS });
+    return true;
+  }
+  if (cur.count >= LOOKUP_MAX) return false;
+  cur.count += 1;
+  return true;
+}
+
+function cacheGet(key) {
+  const v = lookupCache.get(key);
+  if (!v) return null;
+  if (Date.now() > v.exp) {
+    lookupCache.delete(key);
+    return null;
+  }
+  return v.data;
+}
+
+function cacheSet(key, data, ttlMs) {
+  lookupCache.set(key, { data, exp: Date.now() + ttlMs });
+}
+
 /* ---------- API handler ---------- */
 export default function handler(req, res) {
-
   /* ===== CORS (REQUIRED) ===== */
   const origin = req.headers.origin || "";
   const allowedOrigins = new Set([
@@ -32,6 +80,16 @@ export default function handler(req, res) {
   }
   /* ===== END CORS ===== */
 
+  // Only allow GET
+  if (req.method !== "GET") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  // ---- RATE LIMIT (server-side) ----
+  if (!rateLimitLookup(req)) {
+    return res.status(429).json({ error: "Too many requests" });
+  }
+
   try {
     const { lat, lng } = req.query;
 
@@ -44,6 +102,16 @@ export default function handler(req, res) {
 
     if (isNaN(latitude) || isNaN(longitude)) {
       return res.status(400).json({ error: "Invalid lat or lng" });
+    }
+
+    // ---- CACHE (24h) by rounded coords ----
+    const latKey = latitude.toFixed(5);
+    const lngKey = longitude.toFixed(5);
+    const cacheKey = `lookup:${latKey},${lngKey}`;
+
+    const cached = cacheGet(cacheKey);
+    if (cached) {
+      return res.status(200).json(cached);
     }
 
     const point = turf.point([longitude, latitude]);
@@ -81,19 +149,21 @@ export default function handler(req, res) {
       }
     }
 
-    return res.status(200).json({
+    const payload = {
       districts: {
         house,
         senate,
         sboe,
       },
-    });
+    };
 
+    cacheSet(cacheKey, payload, 24 * 60 * 60 * 1000); // 24h
+    return res.status(200).json(payload);
   } catch (err) {
     console.error(err);
     return res.status(500).json({
       error: "Server error",
-      message: err.message,
+      message: err?.message || "Unknown error",
     });
   }
 }
