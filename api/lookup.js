@@ -74,7 +74,7 @@ export default async function handler(req, res) {
     const houseGeo = loadGeoJSON("data/tx-house-2025.geojson");
     const senateGeo = loadGeoJSON("data/tx-senate-2025.geojson");
     const sboeGeo = loadGeoJSON("data/sboe_plane2106.geojson");
-    const congressGeo = loadGeoJSON("tx_congress_planc2333.geojson");
+    const congressGeo = loadGeoJSON("data/tx_congress_planc2333.geojson");
 
     let house = null;
     let senate = null;
