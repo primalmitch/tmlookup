@@ -12,9 +12,7 @@ function loadGeoJSON(relativePath) {
 
 function getIP(req) {
   const xff = req.headers["x-forwarded-for"];
-  return (Array.isArray(xff) ? xff[0] : (xff || ""))
-    .split(",")[0]
-    .trim() || "unknown";
+  return (Array.isArray(xff) ? xff[0] : xff || "").split(",")[0].trim() || "unknown";
 }
 
 async function rateLimitKV(req) {
@@ -32,10 +30,7 @@ async function rateLimitKV(req) {
 export default async function handler(req, res) {
   /* ===== CORS ===== */
   const origin = req.headers.origin || "";
-  const allowed = new Set([
-    "https://www.texasmatters.org",
-    "https://texasmatters.org",
-  ]);
+  const allowed = new Set(["https://www.texasmatters.org", "https://texasmatters.org"]);
 
   if (allowed.has(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
@@ -79,10 +74,12 @@ export default async function handler(req, res) {
     const houseGeo = loadGeoJSON("data/tx-house-2025.geojson");
     const senateGeo = loadGeoJSON("data/tx-senate-2025.geojson");
     const sboeGeo = loadGeoJSON("data/sboe_plane2106.geojson");
+    const congressGeo = loadGeoJSON("tx_congress_planc2333.geojson");
 
     let house = null;
     let senate = null;
     let sboe = null;
+    let congress = null;
 
     for (const f of houseGeo.features) {
       if (turf.booleanPointInPolygon(point, f)) {
@@ -105,7 +102,14 @@ export default async function handler(req, res) {
       }
     }
 
-    const payload = { districts: { house, senate, sboe } };
+    for (const f of congressGeo.features) {
+      if (turf.booleanPointInPolygon(point, f)) {
+        congress = Number(f.properties.District);
+        break;
+      }
+    }
+
+    const payload = { districts: { house, senate, sboe, congress } };
     await kv.set(cacheKey, payload, { ex: 86400 }); // 24h
 
     return res.status(200).json(payload);
