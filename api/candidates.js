@@ -124,8 +124,8 @@ export default async function handler(req, res) {
     const data = await r.json();
     const payload = { records: data.records || [] };
 
-    // Cache 30m (1800 seconds)
-    await kv.set(cacheKey, payload, { ex: 1800 });
+// Cache 5m (300 seconds)
+await kv.set(cacheKey, payload, { ex: 300 });
 
     return res.status(200).json(payload);
   } catch (e) {
