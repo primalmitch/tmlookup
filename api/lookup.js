@@ -16,14 +16,19 @@ function getIP(req) {
 }
 
 async function rateLimitKV(req) {
-  const ip = getIP(req);
-  const key = `rl:lookup:${ip}`;
+  try {
+    const ip = getIP(req);
+    const key = `rl:lookup:${ip}`;
 
-  const count = await kv.incr(key);
-  if (count === 1) {
-    await kv.expire(key, 60); // 60 seconds
+    const count = await kv.incr(key);
+    if (count === 1) {
+      await kv.expire(key, 60); // 60 seconds
+    }
+    return count <= 10; // 10 req/min
+  } catch (e) {
+    console.warn("KV rate limit skipped:", e.message);
+    return true; // allow if KV fails
   }
-  return count <= 10; // 10 req/min
 }
 
 /* ---------- API handler ---------- */
@@ -66,8 +71,16 @@ export default async function handler(req, res) {
     const lngKey = longitude.toFixed(5);
     const cacheKey = `cache:lookup:${latKey},${lngKey}`;
 
-    const cached = await kv.get(cacheKey);
+    /* ===== SAFE CACHE GET ===== */
+    let cached = null;
+    try {
+      cached = await kv.get(cacheKey);
+    } catch (e) {
+      console.warn("KV get skipped:", e.message);
+    }
+
     if (cached) return res.status(200).json(cached);
+    /* ===== END SAFE CACHE GET ===== */
 
     const point = turf.point([longitude, latitude]);
 
@@ -110,7 +123,14 @@ export default async function handler(req, res) {
     }
 
     const payload = { districts: { house, senate, sboe, congress } };
-    await kv.set(cacheKey, payload, { ex: 86400 }); // 24h
+
+    /* ===== SAFE CACHE SET ===== */
+    try {
+      await kv.set(cacheKey, payload, { ex: 86400 }); // 24h
+    } catch (e) {
+      console.warn("KV set skipped:", e.message);
+    }
+    /* ===== END SAFE CACHE SET ===== */
 
     return res.status(200).json(payload);
   } catch (e) {
