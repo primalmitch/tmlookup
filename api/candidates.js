@@ -9,30 +9,30 @@ function getIP(req) {
 
 /**
  * Two-tier fixed-window rate limiting (shared via KV)
- * - burst: N per 60 seconds
- * - sustained: M per 3600 seconds
  */
 async function rateLimitTwoTier(req, { prefix, burstLimit, hourLimit }) {
-  const ip = getIP(req);
+  try {
+    const ip = getIP(req);
 
-  const minuteKey = `rl:${prefix}:m:${ip}`;
-  const hourKey = `rl:${prefix}:h:${ip}`;
+    const minuteKey = `rl:${prefix}:m:${ip}`;
+    const hourKey = `rl:${prefix}:h:${ip}`;
 
-  // increment both counters
-  const [mCount, hCount] = await Promise.all([
-    kv.incr(minuteKey),
-    kv.incr(hourKey),
-  ]);
+    const [mCount, hCount] = await Promise.all([
+      kv.incr(minuteKey),
+      kv.incr(hourKey),
+    ]);
 
-  // set TTLs only on first hit
-  if (mCount === 1) await kv.expire(minuteKey, 60);
-  if (hCount === 1) await kv.expire(hourKey, 3600);
+    if (mCount === 1) await kv.expire(minuteKey, 60);
+    if (hCount === 1) await kv.expire(hourKey, 3600);
 
-  return mCount <= burstLimit && hCount <= hourLimit;
+    return mCount <= burstLimit && hCount <= hourLimit;
+  } catch (e) {
+    console.warn("KV rate limit skipped:", e.message);
+    return true; // allow request if KV fails
+  }
 }
 
 export default async function handler(req, res) {
-  // ---- CORS ----
   const origin = req.headers.origin || "";
   const allowed = new Set([
     "https://texas-matters.webflow.io",
@@ -53,13 +53,10 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  // ---- TWO-TIER RATE LIMIT (shared via KV) ----
-  // Burst allows one lookup fan-out + a few addresses.
-  // Hour cap protects against sustained scraping/abuse.
   const ok = await rateLimitTwoTier(req, {
     prefix: "candidates",
-    burstLimit: 200, // per minute
-    hourLimit: 2000, // per hour
+    burstLimit: 200,
+    hourLimit: 2000,
   });
 
   if (!ok) {
@@ -80,13 +77,20 @@ export default async function handler(req, res) {
 
     if (!office) return res.status(400).json({ error: "Missing office" });
 
-    // ---- KV CACHE (30 minutes) ----
     const cacheKey = `cache:candidates:${office.toLowerCase()}|${
       districtRaw === undefined ? "none" : String(districtRaw)
     }`;
 
-    const cached = await kv.get(cacheKey);
+    /* ===== SAFE CACHE GET ===== */
+    let cached = null;
+    try {
+      cached = await kv.get(cacheKey);
+    } catch (e) {
+      console.warn("KV get skipped:", e.message);
+    }
+
     if (cached) return res.status(200).json(cached);
+    /* ===== END SAFE CACHE GET ===== */
 
     const safeOffice = office.replace(/"/g, '\\"');
     let formula = `{Office}="${safeOffice}"`;
@@ -102,7 +106,6 @@ export default async function handler(req, res) {
     const params = new URLSearchParams();
     params.set("filterByFormula", formula);
 
-    // ✅ KEEP ORIGINAL ORDERING
     params.append("sort[0][field]", "Order");
     params.append("sort[0][direction]", "asc");
     params.append("sort[1][field]", "Name");
@@ -124,8 +127,13 @@ export default async function handler(req, res) {
     const data = await r.json();
     const payload = { records: data.records || [] };
 
-// Cache 5m (300 seconds)
-await kv.set(cacheKey, payload, { ex: 300 });
+    /* ===== SAFE CACHE SET ===== */
+    try {
+      await kv.set(cacheKey, payload, { ex: 300 });
+    } catch (e) {
+      console.warn("KV set skipped:", e.message);
+    }
+    /* ===== END SAFE CACHE SET ===== */
 
     return res.status(200).json(payload);
   } catch (e) {
